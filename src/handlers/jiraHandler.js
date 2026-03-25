@@ -67,7 +67,7 @@ async function handleJiraWebhook(req, res) {
         {
           title: `[${jiraTicket}] ${summary}`,
           body: `## Jira Ticket: ${jiraTicket}\n\n**Type:** ${issueType}\n**Priority:** ${priority}\n\n## Description\n${description}\n\n---\n*This issue was automatically created from Jira ticket ${jiraTicket}*`,
-          labels: ["automation", "jira"]
+          labels: ["automation", "jira", "agent-ready"]
         },
         {
           headers: {
@@ -88,7 +88,7 @@ async function handleJiraWebhook(req, res) {
     // Save mapping
     db.createMapping(jiraTicket, githubIssueNumber);
 
-    // Trigger Claude Code workflow
+    // Trigger Claude Code workflow (best effort; issue label also triggers automation)
     try {
       await axios.post(
         `https://api.github.com/repos/${process.env.GITHUB_OWNER}/${process.env.GITHUB_REPO}/dispatches`,
@@ -109,8 +109,7 @@ async function handleJiraWebhook(req, res) {
         }
       );
     } catch (err) {
-      console.error(`[${requestId}] GitHub dispatch failed`, axiosErrorDetails(err));
-      return res.status(500).json({ error: "GitHub dispatch failed" });
+      console.error(`[${requestId}] GitHub dispatch failed (non-fatal)`, axiosErrorDetails(err));
     }
 
     console.log(`[${requestId}] Triggered Claude Code workflow for issue #${githubIssueNumber}`);
