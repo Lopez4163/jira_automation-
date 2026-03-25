@@ -1,3 +1,4 @@
 .env
+.env.local
 node_modules/
-automation.db.env.local
+automation.db
