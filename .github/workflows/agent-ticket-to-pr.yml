@@ -1,0 +1,82 @@
+name: Agent - Ticket to PR
+
+on:
+  repository_dispatch:
+    types: [claude-code-trigger]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "GitHub issue number to process"
+        required: true
+      jira_ticket:
+        description: "Jira ticket key (optional)"
+        required: false
+      summary:
+        description: "Ticket summary (optional)"
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve inputs
+        id: input
+        run: |
+          ISSUE_NUMBER="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
+          JIRA_TICKET="${{ github.event.client_payload.jira_ticket || github.event.inputs.jira_ticket }}"
+          SUMMARY="${{ github.event.client_payload.summary || github.event.inputs.summary }}"
+
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "issue_number is required"
+            exit 1
+          fi
+
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "jira_ticket=$JIRA_TICKET" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log trigger payload
+        run: |
+          echo "Issue #${{ steps.input.outputs.issue_number }}"
+          echo "Jira ticket: ${{ steps.input.outputs.jira_ticket }}"
+          echo "Summary: ${{ steps.input.outputs.summary }}"
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
+            You are working in repository ${{ github.repository }}.
+
+            Source ticket:
+            - GitHub issue #${{ steps.input.outputs.issue_number }}
+            - Jira ticket: ${{ steps.input.outputs.jira_ticket }}
+            - Summary: ${{ steps.input.outputs.summary }}
+
+            Required workflow:
+            1) Read issue #${{ steps.input.outputs.issue_number }} and understand the requested maintenance change.
+            2) Create branch: agent/issue-${{ steps.input.outputs.issue_number }}
+            3) Implement the smallest safe change to satisfy the issue.
+            4) Run relevant project checks/tests and fix failures caused by your change.
+            5) Open a PR to main with:
+               - clear title and summary
+               - testing notes
+               - "Closes #${{ steps.input.outputs.issue_number }}" in PR body
+
+            If the issue is unclear or unsafe, leave a comment on the issue explaining what is missing and stop.

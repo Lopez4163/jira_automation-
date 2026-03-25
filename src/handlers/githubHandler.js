@@ -23,6 +23,13 @@ function extractIssueNumberFromPR(pullRequest) {
   return null;
 }
 
+function pickTransition(transitions, preferredNames, fallbackKeyword) {
+  const normalized = preferredNames.map(name => name.toLowerCase());
+  const exact = transitions.find(t => normalized.includes((t.name || "").toLowerCase()));
+  if (exact) return exact;
+  return transitions.find(t => (t.name || "").toLowerCase().includes(fallbackKeyword));
+}
+
 async function handleGithubWebhook(req, res) {
   const requestId = `gh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -111,8 +118,11 @@ async function handleGithubWebhook(req, res) {
         }
       );
 
-      const inReview = transitionsRes.data.transitions.find(
-        t => t.name.toLowerCase().includes("review") || t.name.toLowerCase().includes("progress")
+      const transitions = transitionsRes.data.transitions || [];
+      const inReview = pickTransition(
+        transitions,
+        ["In Review", "Code Review", "Ready for Review"],
+        "review"
       );
 
       if (inReview) {
@@ -129,7 +139,9 @@ async function handleGithubWebhook(req, res) {
         );
         console.log(`[${requestId}] Transitioned ${jiraTicket} to ${inReview.name}`);
       } else {
-        console.log(`[${requestId}] No review/progress transition found for ${jiraTicket}`);
+        console.log(
+          `[${requestId}] No In Review transition found for ${jiraTicket}. Available: ${transitions.map(t => t.name).join(", ")}`
+        );
       }
     } catch (err) {
       console.error(`[${requestId}] Jira transition failed`, axiosErrorDetails(err));

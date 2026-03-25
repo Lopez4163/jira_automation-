@@ -26,6 +26,13 @@ function axiosErrorDetails(err) {
   };
 }
 
+function pickTransition(transitions, preferredNames, fallbackKeyword) {
+  const normalized = preferredNames.map(name => name.toLowerCase());
+  const exact = transitions.find(t => normalized.includes((t.name || "").toLowerCase()));
+  if (exact) return exact;
+  return transitions.find(t => (t.name || "").toLowerCase().includes(fallbackKeyword));
+}
+
 async function handleJiraWebhook(req, res) {
   const requestId = `jira-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -107,6 +114,47 @@ async function handleJiraWebhook(req, res) {
     }
 
     console.log(`[${requestId}] Triggered Claude Code workflow for issue #${githubIssueNumber}`);
+
+    // Move Jira ticket to In Progress after issue + dispatch are successful.
+    try {
+      const transitionsRes = await axios.get(
+        `https://${process.env.JIRA_DOMAIN}/rest/api/3/issue/${jiraTicket}/transitions`,
+        {
+          auth: {
+            username: process.env.JIRA_EMAIL,
+            password: process.env.JIRA_API_TOKEN
+          },
+          timeout: 15000
+        }
+      );
+      const transitions = transitionsRes.data.transitions || [];
+      const inProgress = pickTransition(
+        transitions,
+        ["In Progress", "Start Progress", "Selected for Development"],
+        "progress"
+      );
+
+      if (inProgress) {
+        await axios.post(
+          `https://${process.env.JIRA_DOMAIN}/rest/api/3/issue/${jiraTicket}/transitions`,
+          { transition: { id: inProgress.id } },
+          {
+            auth: {
+              username: process.env.JIRA_EMAIL,
+              password: process.env.JIRA_API_TOKEN
+            },
+            timeout: 15000
+          }
+        );
+        console.log(`[${requestId}] Transitioned ${jiraTicket} to ${inProgress.name}`);
+      } else {
+        console.log(
+          `[${requestId}] No In Progress transition found for ${jiraTicket}. Available: ${transitions.map(t => t.name).join(", ")}`
+        );
+      }
+    } catch (err) {
+      console.error(`[${requestId}] Jira In Progress transition failed`, axiosErrorDetails(err));
+    }
 
     // Comment on Jira ticket
     try {
