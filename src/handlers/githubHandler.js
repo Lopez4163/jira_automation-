@@ -36,9 +36,10 @@ async function handleGithubWebhook(req, res) {
     const event = req.headers["x-github-event"];
     const { action, pull_request } = req.body;
     const allowedActions = new Set(["opened", "reopened", "synchronize"]);
+    const isMergedEvent = event === "pull_request" && action === "closed" && pull_request?.merged === true;
 
     // Handle PR lifecycle events that indicate PR is active/updated.
-    if (event !== "pull_request" || !allowedActions.has(action)) {
+    if ((event !== "pull_request" || !allowedActions.has(action)) && !isMergedEvent) {
       return res.status(200).json({ message: "Event ignored" });
     }
 
@@ -56,7 +57,14 @@ async function handleGithubWebhook(req, res) {
     const prTitle = pull_request.title;
 
     // Extract issue number from branch name, title, or body.
-    const githubIssueNumber = extractIssueNumberFromPR(pull_request);
+    let githubIssueNumber = extractIssueNumberFromPR(pull_request);
+    if (!githubIssueNumber && isMergedEvent) {
+      const byPR = db.getByPRNumber(prNumber);
+      if (byPR?.github_issue_number) {
+        githubIssueNumber = byPR.github_issue_number;
+      }
+    }
+
     if (!githubIssueNumber) {
       console.log(`[${requestId}] Could not find issue number in PR, skipping`);
       return res.status(200).json({ message: "No issue number found" });
@@ -78,6 +86,10 @@ async function handleGithubWebhook(req, res) {
     console.log(`[${requestId}] Updating Jira ticket ${jiraTicket} with PR #${prNumber}`);
 
     // Post PR link as comment on Jira ticket
+    const jiraCommentText = isMergedEvent
+      ? `Claude PR has been merged.\n\nPR #${prNumber}: ${prTitle}\n${prUrl}`
+      : `Claude Code has opened a PR for this ticket.\n\nPR #${prNumber}: ${prTitle}\n${prUrl}`;
+
     try {
       await axios.post(
         `https://${process.env.JIRA_DOMAIN}/rest/api/3/issue/${jiraTicket}/comment`,
@@ -89,7 +101,7 @@ async function handleGithubWebhook(req, res) {
               type: "paragraph",
               content: [{
                 type: "text",
-                text: `Claude Code has opened a PR for this ticket.\n\nPR #${prNumber}: ${prTitle}\n${prUrl}`
+                text: jiraCommentText
               }]
             }]
           }
@@ -106,7 +118,7 @@ async function handleGithubWebhook(req, res) {
       console.error(`[${requestId}] Jira PR comment failed`, axiosErrorDetails(err));
     }
 
-    // Transition Jira ticket to "In Review"
+    // Transition Jira ticket based on PR state.
     try {
       const transitionsRes = await axios.get(
         `https://${process.env.JIRA_DOMAIN}/rest/api/3/issue/${jiraTicket}/transitions`,
@@ -120,16 +132,23 @@ async function handleGithubWebhook(req, res) {
       );
 
       const transitions = transitionsRes.data.transitions || [];
-      const inReview = pickTransition(
-        transitions,
-        ["In Review", "Code Review", "Ready for Review"],
-        "review"
-      );
+      const targetTransition = isMergedEvent
+        ? pickTransition(
+          transitions,
+          ["Done", "Closed", "Complete"],
+          "done"
+        )
+        : pickTransition(
+          transitions,
+          ["In Review", "Code Review", "Ready for Review"],
+          "review"
+        );
 
-      if (inReview) {
+      const targetName = isMergedEvent ? "Done" : "In Review";
+      if (targetTransition) {
         await axios.post(
           `https://${process.env.JIRA_DOMAIN}/rest/api/3/issue/${jiraTicket}/transitions`,
-          { transition: { id: inReview.id } },
+          { transition: { id: targetTransition.id } },
           {
             auth: {
               username: process.env.JIRA_EMAIL,
@@ -138,17 +157,38 @@ async function handleGithubWebhook(req, res) {
             timeout: 15000
           }
         );
-        console.log(`[${requestId}] Transitioned ${jiraTicket} to ${inReview.name}`);
+        console.log(`[${requestId}] Transitioned ${jiraTicket} to ${targetTransition.name}`);
       } else {
         console.log(
-          `[${requestId}] No In Review transition found for ${jiraTicket}. Available: ${transitions.map(t => t.name).join(", ")}`
+          `[${requestId}] No ${targetName} transition found for ${jiraTicket}. Available: ${transitions.map(t => t.name).join(", ")}`
         );
       }
     } catch (err) {
       console.error(`[${requestId}] Jira transition failed`, axiosErrorDetails(err));
     }
 
-    res.status(200).json({ success: true, jiraTicket, prNumber });
+    // Close mapped GitHub issue when PR is merged.
+    if (isMergedEvent) {
+      try {
+        await axios.patch(
+          `https://api.github.com/repos/${process.env.GITHUB_OWNER}/${process.env.GITHUB_REPO}/issues/${githubIssueNumber}`,
+          { state: "closed" },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+              Accept: "application/vnd.github+json"
+            },
+            timeout: 15000
+          }
+        );
+        console.log(`[${requestId}] Closed GitHub issue #${githubIssueNumber} after merge`);
+      } catch (err) {
+        console.error(`[${requestId}] Failed to close GitHub issue #${githubIssueNumber}`, axiosErrorDetails(err));
+      }
+    }
+
+    const responseState = isMergedEvent ? "merged" : "active";
+    res.status(200).json({ success: true, jiraTicket, prNumber, state: responseState });
 
   } catch (err) {
     console.error(`[${requestId}] Error handling GitHub webhook`, axiosErrorDetails(err));

@@ -44,4 +44,8 @@ function getByJiraTicket(jiraTicket) {
   return db.prepare("SELECT * FROM mappings WHERE jira_ticket = ?").get(jiraTicket);
 }
 
-module.exports = { init, createMapping, updateWithPR, getByIssueNumber, getByJiraTicket };
+function getByPRNumber(githubPRNumber) {
+  return db.prepare("SELECT * FROM mappings WHERE github_pr_number = ?").get(githubPRNumber);
+}
+
+module.exports = { init, createMapping, updateWithPR, getByIssueNumber, getByJiraTicket, getByPRNumber };
