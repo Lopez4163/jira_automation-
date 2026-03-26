@@ -2,7 +2,7 @@ name: Agent - Ticket to PR
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [labeled]
 
 permissions:
   contents: write
@@ -18,9 +18,7 @@ concurrency:
 
 jobs:
   run-agent:
-    if: |
-      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'agent-ready')) ||
-      (github.event.action == 'labeled' && github.event.label.name == 'agent-ready')
+    if: github.event.action == 'labeled' && github.event.label.name == 'agent-ready'
     runs-on: ubuntu-latest
 
     steps:

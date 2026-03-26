@@ -35,9 +35,10 @@ async function handleGithubWebhook(req, res) {
   try {
     const event = req.headers["x-github-event"];
     const { action, pull_request } = req.body;
+    const allowedActions = new Set(["opened", "reopened", "synchronize"]);
 
-    // Only handle PR opened events
-    if (event !== "pull_request" || action !== "opened") {
+    // Handle PR lifecycle events that indicate PR is active/updated.
+    if (event !== "pull_request" || !allowedActions.has(action)) {
       return res.status(200).json({ message: "Event ignored" });
     }
 
@@ -61,7 +62,7 @@ async function handleGithubWebhook(req, res) {
       return res.status(200).json({ message: "No issue number found" });
     }
 
-    console.log(`[${requestId}] PR #${prNumber} opened for issue #${githubIssueNumber}`);
+    console.log(`[${requestId}] PR #${prNumber} (${action}) for issue #${githubIssueNumber}`);
 
     // Update DB mapping
     db.updateWithPR(githubIssueNumber, prNumber, prUrl);
