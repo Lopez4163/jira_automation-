@@ -1,3 +1,3 @@
-# Issue 15
+# Issue 17
 
-Auto-generated file for: [KAN-18] create a new file called tester.md
+Auto-generated file for: [KAN-19] inside the tester.md file add bold text called BOLDER
