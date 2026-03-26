@@ -36,29 +36,111 @@ jobs:
           echo "URL: ${{ github.event.issue.html_url }}"
           echo "Labels: ${{ join(github.event.issue.labels.*.name, ', ') }}"
 
-      - name: Run Claude Code
-        uses: anthropics/claude-code-action@beta
+      - name: Generate patch plan with Groq
+        id: groq
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          issue_number = os.environ["ISSUE_NUMBER"]
+          issue_title = os.environ.get("ISSUE_TITLE", "")
+          issue_body = os.environ.get("ISSUE_BODY", "")
+          groq_key = os.environ.get("GROQ_API_KEY", "")
+          text = f"{issue_title}\n{issue_body}"
+
+          filename_match = re.search(r"([A-Za-z0-9._/-]+\.md)\b", text, re.IGNORECASE)
+          requested_filename = filename_match.group(1) if filename_match else f"issue-{issue_number}.md"
+          requested_filename = requested_filename.lstrip("/")
+          if ".." in requested_filename:
+              requested_filename = f"issue-{issue_number}.md"
+
+          fallback = {
+              "filename": requested_filename,
+              "content": f"# Issue {issue_number}\n\nAuto-generated file for: {issue_title}\n",
+              "commit_message": f"feat: add {requested_filename} for issue #{issue_number}",
+              "pr_title": f"feat: resolve issue #{issue_number} - add {requested_filename}",
+              "pr_body": f"## Summary\n- added `{requested_filename}` as requested\n\nCloses #{issue_number}"
+          }
+
+          result = fallback
+          if groq_key:
+              prompt = f"""
+          You are generating a tiny safe code change for a GitHub issue.
+          Return strict JSON only with keys:
+          filename, content, commit_message, pr_title, pr_body
+
+          Rules:
+          - Keep change minimal.
+          - Prefer creating/updating a single markdown file.
+          - filename must be relative and safe.
+          - pr_body must include: Closes #{issue_number}
+
+          Issue title: {issue_title}
+          Issue body:
+          {issue_body}
+          """.strip()
+
+              payload = {
+                  "model": "llama-3.3-70b-versatile",
+                  "temperature": 0.2,
+                  "messages": [
+                      {"role": "system", "content": "You generate strict JSON only."},
+                      {"role": "user", "content": prompt}
+                  ]
+              }
+              req = urllib.request.Request(
+                  "https://api.groq.com/openai/v1/chat/completions",
+                  data=json.dumps(payload).encode("utf-8"),
+                  headers={
+                      "Content-Type": "application/json",
+                      "Authorization": f"Bearer {groq_key}"
+                  },
+                  method="POST"
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      raw = json.loads(resp.read().decode("utf-8"))
+                      content = raw["choices"][0]["message"]["content"]
+                      parsed = json.loads(content)
+                      result = {**fallback, **parsed}
+              except Exception as e:
+                  print(f"Groq call failed, using fallback: {e}")
+
+          filename = (result.get("filename") or requested_filename).lstrip("/")
+          if not filename or ".." in filename:
+              filename = requested_filename
+
+          file_content = result.get("content") or fallback["content"]
+          os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
+          with open(filename, "w", encoding="utf-8") as f:
+              f.write(file_content)
+
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as f:
+              f.write(f"filename={filename}\n")
+              f.write("commit_message<<EOF\n")
+              f.write((result.get("commit_message") or fallback["commit_message"]) + "\nEOF\n")
+              f.write("pr_title<<EOF\n")
+              f.write((result.get("pr_title") or fallback["pr_title"]) + "\nEOF\n")
+              f.write("pr_body<<EOF\n")
+              f.write((result.get("pr_body") or fallback["pr_body"]) + "\nEOF\n")
+          PY
+
+      - name: Open Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          direct_prompt: |
-            You are working in repository ${{ github.repository }}.
-
-            Source ticket:
-            - GitHub issue #${{ github.event.issue.number }}
-            - Title: ${{ github.event.issue.title }}
-            - URL: ${{ github.event.issue.html_url }}
-            - Body:
-              ${{ github.event.issue.body }}
-
-            Required workflow:
-            1) Read issue #${{ github.event.issue.number }} and understand the requested maintenance change.
-            2) Create branch: agent/issue-${{ github.event.issue.number }}
-            3) Implement the smallest safe change to satisfy the issue.
-            4) Run relevant project checks/tests and fix failures caused by your change.
-            5) Open a PR to main with:
-               - clear title and summary
-               - testing notes
-               - "Closes #${{ github.event.issue.number }}" in PR body
-
-            If the issue is unclear or unsafe, leave a comment on the issue explaining what is missing and stop.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: groq/issue-${{ github.event.issue.number }}
+          base: main
+          commit-message: ${{ steps.groq.outputs.commit_message }}
+          title: ${{ steps.groq.outputs.pr_title }}
+          body: ${{ steps.groq.outputs.pr_body }}
+          labels: automation,jira
