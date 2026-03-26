@@ -137,7 +137,7 @@ jobs:
       - name: Open Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           branch: groq/issue-${{ github.event.issue.number }}
           base: main
           commit-message: ${{ steps.groq.outputs.commit_message }}
